@@ -1,0 +1,65 @@
+/* GeoIP Module Styles */
+
+#geoip-countries-table .blocked {
+    background-color: #fff6f6 !important;
+}
+
+/* Toolbar row: flex layout with vertical centering */
+#geoip-countries-table_wrapper .row:first-child {
+    display: flex !important;
+    align-items: center;
+}
+
+#geoip-countries-table_wrapper .row:first-child .column {
+    display: flex;
+    align-items: center;
+    gap: 1em;
+}
+
+#geoip-countries-table_wrapper .row:first-child .column.right.aligned {
+    justify-content: flex-end;
+}
+
+/* Consistent height for all toolbar controls */
+#geoip-countries-table_wrapper .row:first-child #geoip-update-now,
+#geoip-countries-table_wrapper .row:first-child .ui.dropdown.selection,
+#geoip-countries-table_wrapper .row:first-child .dataTables_filter input {
+    height: 38px !important;
+    min-height: 38px !important;
+    line-height: 1;
+    box-sizing: border-box !important;
+    margin: 0;
+}
+
+#geoip-countries-table_wrapper .row:first-child #geoip-update-now {
+    padding-top: 0;
+    padding-bottom: 0;
+    display: inline-flex;
+    align-items: center;
+}
+
+#geoip-countries-table_wrapper .row:first-child .ui.dropdown.selection {
+    display: inline-flex;
+    align-items: center;
+    padding-top: 0;
+    padding-bottom: 0;
+    min-width: auto;
+}
+
+#geoip-countries-table_wrapper .row:first-child .dataTables_filter input {
+    padding: .67857143em 1em;
+}
+
+/* DataTables filter wrapper: remove extra margins */
+#geoip-countries-table_wrapper .row:first-child .dataTables_filter {
+    margin: 0;
+}
+
+#geoip-update-now.loading {
+    pointer-events: none;
+}
+
+/* Space between DataTable pagination and submit button */
+#geoip-countries-table_wrapper {
+    margin-bottom: 1em;
+}

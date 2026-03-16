@@ -1,0 +1,6 @@
+/vendor/
+/db/*.db
+.idea/
+*.swp
+*.swo
+.DS_Store

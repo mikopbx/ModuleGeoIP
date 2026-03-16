@@ -1,0 +1,14 @@
+{
+    "name": "mikopbx/module-geoip",
+    "description": "GeoIP filtering module for MikoPBX - blocks traffic by country using ipset",
+    "type": "library",
+    "require": {
+        "php": ">=8.0",
+        "guzzlehttp/guzzle": "^7.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Modules\\ModuleGeoIP\\": ""
+        }
+    }
+}
