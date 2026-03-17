@@ -8,7 +8,7 @@ ModuleGeoIP — модуль гео-фильтрации трафика для M
 
 ## Project Status
 
-Репозиторий находится на стадии спецификации — `README.md` описывает архитектуру, API, модели и UI. Реализация кода ещё не создана.
+Модуль реализован и задеплоен на тестовый сервер `boffart.miko.ru`.
 
 ## MikoPBX Module Architecture
 
@@ -58,9 +58,36 @@ php -l <file.php>
 ## Database Schema
 
 - `m_ModuleGeoIP`: enabled (string '0'/'1'), lastUpdate (ISO timestamp)
-- `m_GeoFilterCountries`: country_code (string(2) UNIQUE, ISO 3166-1 alpha-2), blocked (string '0'/'1')
+- `m_GeoFilterCountries`: country_code (string(2) UNIQUE, ISO 3166-1 alpha-2), blocked (string '0'/'1'). Страна разрешена если запись отсутствует или `blocked='0'`.
 
 Поля boolean хранятся как `string(1)` — стандарт MikoPBX.
+
+## Deployment (Test Server)
+
+Server: `serber@boffart.miko.ru`
+Module path: `/storage/usbdisk1/mikopbx/custom_modules/ModuleGeoIP/`
+
+```bash
+# Деплой изменённых файлов
+scp <file> serber@boffart.miko.ru:/storage/usbdisk1/mikopbx/custom_modules/ModuleGeoIP/<file>
+
+# Перезапуск воркера (SafeScripts перезапустит через cron */1)
+ssh serber@boffart.miko.ru "kill $(ps aux | grep SafeScriptsCore | grep -v grep | awk '{print $2}')"
+
+# Сброс кэшей переводов/шаблонов
+ssh serber@boffart.miko.ru "redis-cli -n 4 FLUSHDB && rm -rf /var/tmp/www_cache/volt/*"
+```
+
+- `bin/Globals.php` — симлинк на `/usr/www/src/Core/Config/Globals.php` (создаётся при установке модуля, при ручном деплое нужно создать)
+- CSS/JS ассеты — через симлинки в `/usr/www/sites/admin-cabinet/assets/{css,js}/cache/ModuleGeoIP/`
+- Nginx кэш браузера: `expires 3d` — для обновления стилей нужен hard refresh (Ctrl+Shift+R)
+
+## REST API Auth
+
+В `getPBXCoreRESTAdditionalRoutes()` последний параметр массива — флаг авторизации:
+- `true` — требует Bearer token (или localhost)
+- `false` — публичный endpoint без авторизации
+Все маршруты модуля используют `true`. UI работает через сессию браузера (запросы идут с localhost через php-fpm).
 
 ## Reference Modules
 

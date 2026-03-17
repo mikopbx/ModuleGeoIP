@@ -59,6 +59,10 @@
     pointer-events: none;
 }
 
+#geoip-update-now .progress-text {
+    margin-left: 0.5em;
+}
+
 /* Space between DataTable pagination and submit button */
 #geoip-countries-table_wrapper {
     margin-bottom: 1em;
