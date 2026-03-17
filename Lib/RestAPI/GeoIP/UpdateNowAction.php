@@ -46,8 +46,9 @@ class UpdateNowAction
             $result->success = true;
             $result->data = ['message' => 'Update scheduled'];
         } catch (\Throwable $e) {
+            \MikoPBX\Core\System\Util::sysLogMsg(__CLASS__, 'Failed to schedule update: ' . $e->getMessage());
             $result->success = false;
-            $result->messages[] = 'Failed to schedule update: ' . $e->getMessage();
+            $result->messages[] = 'Failed to schedule update';
         }
 
         return $result;

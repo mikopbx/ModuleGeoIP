@@ -86,8 +86,9 @@ class GetListAction
                 'countries' => $countries,
             ];
         } catch (\Throwable $e) {
+            \MikoPBX\Core\System\Util::sysLogMsg(__CLASS__, 'Failed to get country list: ' . $e->getMessage());
             $result->success = false;
-            $result->messages[] = 'Failed to get country list: ' . $e->getMessage();
+            $result->messages[] = 'Failed to get country list';
         }
 
         return $result;

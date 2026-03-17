@@ -35,6 +35,7 @@ class GeoIPSetManager
     private const SET_V4_TMP = 'geoip_blocked_v4_tmp';
     private const SET_V6_TMP = 'geoip_blocked_v6_tmp';
     private const MAX_ELEM   = 500000;
+    private const LOCK_FILE  = '/tmp/geoip_rebuild.lock';
 
     /**
      * Check if ipset binary is available on this system.
@@ -73,29 +74,46 @@ class GeoIPSetManager
             return;
         }
 
-        // Rebuild IPv4 set
-        self::rebuildOneSet(
-            $ipset,
-            self::SET_V4,
-            self::SET_V4_TMP,
-            'hash:net',
-            'inet',
-            $countryCodes,
-            $dataDir,
-            '.zone'
-        );
+        // Acquire exclusive lock to prevent race conditions
+        $lockFp = fopen(self::LOCK_FILE, 'c');
+        if ($lockFp === false) {
+            Util::sysLogMsg(__CLASS__, 'Failed to open lock file');
+            return;
+        }
+        if (!flock($lockFp, LOCK_EX)) {
+            Util::sysLogMsg(__CLASS__, 'Failed to acquire rebuild lock');
+            fclose($lockFp);
+            return;
+        }
 
-        // Rebuild IPv6 set
-        self::rebuildOneSet(
-            $ipset,
-            self::SET_V6,
-            self::SET_V6_TMP,
-            'hash:net',
-            'inet6',
-            $countryCodes,
-            $dataDir,
-            '-v6.zone'
-        );
+        try {
+            // Rebuild IPv4 set
+            self::rebuildOneSet(
+                $ipset,
+                self::SET_V4,
+                self::SET_V4_TMP,
+                'hash:net',
+                'inet',
+                $countryCodes,
+                $dataDir,
+                '.zone'
+            );
+
+            // Rebuild IPv6 set
+            self::rebuildOneSet(
+                $ipset,
+                self::SET_V6,
+                self::SET_V6_TMP,
+                'hash:net',
+                'inet6',
+                $countryCodes,
+                $dataDir,
+                '-v6.zone'
+            );
+        } finally {
+            flock($lockFp, LOCK_UN);
+            fclose($lockFp);
+        }
     }
 
     /**
@@ -192,19 +210,31 @@ class GeoIPSetManager
 
         // Build restore data from CIDR files
         $restoreData = "create $tmpName $type family $family maxelem " . self::MAX_ELEM . " -exist\n";
+        $cidrPattern = ($family === 'inet6')
+            ? '/^[0-9a-f:]+\/\d{1,3}$/i'
+            : '/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,2}$/';
+
         foreach ($countryCodes as $cc) {
-            $cc = strtolower($cc);
-            $file = $dataDir . '/' . $cc . $suffix;
-            if (!file_exists($file)) {
+            // Validate country code format (2 alpha chars only)
+            if (!preg_match('/^[A-Za-z]{2}$/', $cc)) {
                 continue;
             }
-            $lines = file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+            $cc = strtolower($cc);
+            $file = $dataDir . '/' . $cc . $suffix;
+
+            // Read file directly with error handling (no TOCTOU)
+            $lines = @file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
             if ($lines === false) {
                 continue;
             }
             foreach ($lines as $cidr) {
                 $cidr = trim($cidr);
                 if ($cidr === '' || $cidr[0] === '#') {
+                    continue;
+                }
+                // Validate CIDR format before adding to ipset
+                if (!preg_match($cidrPattern, $cidr)) {
+                    Util::sysLogMsg(__CLASS__, "Invalid CIDR skipped: $cidr");
                     continue;
                 }
                 $restoreData .= "add $tmpName $cidr\n";

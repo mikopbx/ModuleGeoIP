@@ -74,8 +74,9 @@ class GetStatusAction
                 'updateRequested'  => $updateRequested,
             ];
         } catch (\Throwable $e) {
+            \MikoPBX\Core\System\Util::sysLogMsg(__CLASS__, 'Failed to get status: ' . $e->getMessage());
             $result->success = false;
-            $result->messages[] = 'Failed to get status: ' . $e->getMessage();
+            $result->messages[] = 'Failed to get status';
         }
 
         return $result;

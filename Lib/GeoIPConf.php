@@ -78,10 +78,10 @@ class GeoIPConf extends ConfigClass
     {
         $baseUrl = '/pbxcore/api/modules/ModuleGeoIP';
         return [
-            [ApiController::class, 'getListAction',    "$baseUrl/getList",    'get',  '/', false],
-            [ApiController::class, 'saveAction',        "$baseUrl/save",       'post', '/', false],
-            [ApiController::class, 'getStatusAction',   "$baseUrl/getStatus",  'get',  '/', false],
-            [ApiController::class, 'updateNowAction',   "$baseUrl/updateNow",  'post', '/', false],
+            [ApiController::class, 'getListAction',    "$baseUrl/getList",    'get',  '/', true],
+            [ApiController::class, 'saveAction',        "$baseUrl/save",       'post', '/', true],
+            [ApiController::class, 'getStatusAction',   "$baseUrl/getStatus",  'get',  '/', true],
+            [ApiController::class, 'updateNowAction',   "$baseUrl/updateNow",  'post', '/', true],
         ];
     }
 

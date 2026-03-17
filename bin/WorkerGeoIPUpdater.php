@@ -49,6 +49,7 @@ class WorkerGeoIPUpdater extends WorkerBase
     private const IPDENY_V6_URL  = 'https://www.ipdeny.com/ipv6/ipaddresses/aggregated/%s-aggregated.zone';
 
     private const HTTP_TIMEOUT   = 30;
+    private const MAX_FILE_SIZE  = 50 * 1024 * 1024; // 50 MB max per file
 
     /**
      * Worker entry point.
@@ -106,6 +107,10 @@ class WorkerGeoIPUpdater extends WorkerBase
 
         $dataDir = GeoIPCountryLookup::getDataDir();
         Util::mwMkdir($dataDir);
+        if (!is_dir($dataDir) || !is_writable($dataDir)) {
+            Util::sysLogMsg(__CLASS__, "Data directory $dataDir is not writable, aborting update");
+            return;
+        }
 
         // Download all country zone files
         $allCodes = array_keys(GeoIPCountryList::getAll());
@@ -155,7 +160,7 @@ class WorkerGeoIPUpdater extends WorkerBase
         $client = new Client([
             'timeout'         => self::HTTP_TIMEOUT,
             'connect_timeout' => 10,
-            'verify'          => false,
+            'verify'          => true,
         ]);
 
         $total = count($countryCodes);
@@ -199,12 +204,39 @@ class WorkerGeoIPUpdater extends WorkerBase
     private function downloadFile(Client $client, string $url, string $destPath, string $label): void
     {
         try {
+            // Validate destination path is within expected directory
+            $realDir = realpath(dirname($destPath));
+            $expectedDir = realpath(GeoIPCountryLookup::getDataDir());
+            if ($realDir === false || $expectedDir === false || strpos($realDir, $expectedDir) !== 0) {
+                Util::sysLogMsg(__CLASS__, "Path traversal attempt for $label: $destPath");
+                return;
+            }
+
             $response = $client->get($url);
             $body = $response->getBody()->getContents();
 
             if (empty(trim($body))) {
                 Util::sysLogMsg(__CLASS__, "Empty response for $label, skipping");
                 return;
+            }
+
+            // Validate response size
+            if (strlen($body) > self::MAX_FILE_SIZE) {
+                Util::sysLogMsg(__CLASS__, "Response too large for $label: " . strlen($body) . " bytes");
+                return;
+            }
+
+            // Validate CIDR format — each non-empty line must be a valid CIDR
+            $lines = explode("\n", $body);
+            foreach ($lines as $line) {
+                $line = trim($line);
+                if ($line === '' || $line[0] === '#') {
+                    continue;
+                }
+                if (!preg_match('/^[0-9a-f.:]+\/\d{1,3}$/i', $line)) {
+                    Util::sysLogMsg(__CLASS__, "Invalid CIDR format in $label: $line");
+                    return;
+                }
             }
 
             file_put_contents($destPath, $body);

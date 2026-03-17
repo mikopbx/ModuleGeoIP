@@ -45,10 +45,15 @@ class SaveAction
                 return $result;
             }
 
-            // Validate country codes
+            // Validate country codes — strict type and format check
             $validCodes = array_keys(GeoIPCountryList::getAll());
-            $blockedCodes = array_map('strtoupper', $blockedCodes);
-            $blockedCodes = array_intersect($blockedCodes, $validCodes);
+            $sanitized = [];
+            foreach ($blockedCodes as $code) {
+                if (is_string($code) && preg_match('/^[A-Za-z]{2}$/', $code)) {
+                    $sanitized[] = strtoupper($code);
+                }
+            }
+            $blockedCodes = array_intersect($sanitized, $validCodes);
 
             // Reset all to unblocked
             GeoFilterCountries::find()->filter(function ($record) {
@@ -86,13 +91,16 @@ class SaveAction
                 }
             }
 
+            Util::sysLogMsg(__CLASS__, 'Blocked countries updated: ' . count($blockedCodes) . ' countries');
+
             $result->success = true;
             $result->data = [
                 'blockedCount' => count($blockedCodes),
             ];
         } catch (\Throwable $e) {
+            Util::sysLogMsg(__CLASS__, 'Failed to save countries: ' . $e->getMessage());
             $result->success = false;
-            $result->messages[] = 'Failed to save countries: ' . $e->getMessage();
+            $result->messages[] = 'Failed to save countries';
         }
 
         return $result;
