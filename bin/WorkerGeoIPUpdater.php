@@ -268,7 +268,7 @@ class WorkerGeoIPUpdater extends WorkerBase
      */
     private function reloadFirewall(): void
     {
-        $iptablesConfClass = '\MikoPBX\Core\System\IptablesConf';
+        $iptablesConfClass = '\MikoPBX\Core\System\Configs\IptablesConf';
         if (class_exists($iptablesConfClass) && method_exists($iptablesConfClass, 'reloadFirewall')) {
             $iptablesConfClass::reloadFirewall();
         }

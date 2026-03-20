@@ -84,7 +84,7 @@ class SaveAction
                 if (is_dir($dataDir)) {
                     GeoIPSetManager::rebuildSets($blockedCodes, $dataDir);
                     // Reload firewall so onAfterIptablesReload injects DROP rules
-                    $iptablesConfClass = '\MikoPBX\Core\System\IptablesConf';
+                    $iptablesConfClass = '\MikoPBX\Core\System\Configs\IptablesConf';
                     if (class_exists($iptablesConfClass) && method_exists($iptablesConfClass, 'reloadFirewall')) {
                         $iptablesConfClass::reloadFirewall();
                     }
