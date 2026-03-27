@@ -39,7 +39,23 @@ class SaveAction
         $result->processor = __METHOD__;
 
         try {
-            $blockedCodes = $data['blocked'] ?? [];
+            // Save status filter preference
+            $statusFilter = $data['statusFilter'] ?? null;
+            if ($statusFilter !== null && in_array($statusFilter, ['all', 'allowed', 'blocked'], true)) {
+                $settings = ModuleGeoIP::findFirst();
+                if ($settings !== null) {
+                    $settings->statusFilter = $statusFilter;
+                    $settings->save();
+                }
+            }
+
+            // Save blocked countries only if explicitly provided
+            if (!array_key_exists('blocked', $data)) {
+                $result->success = true;
+                return $result;
+            }
+
+            $blockedCodes = $data['blocked'];
             if (!is_array($blockedCodes)) {
                 $result->success = false;
                 $result->messages[] = 'Parameter "blocked" must be an array of country codes';
@@ -76,16 +92,6 @@ class SaveAction
                 if (!$record->save()) {
                     Util::sysLogMsg(__CLASS__, 'Failed to save country ' . $cc . ': '
                         . implode(', ', $record->getMessages()));
-                }
-            }
-
-            // Save status filter preference
-            $statusFilter = $data['statusFilter'] ?? null;
-            if ($statusFilter !== null && in_array($statusFilter, ['all', 'allowed', 'blocked'], true)) {
-                $settings = ModuleGeoIP::findFirst();
-                if ($settings !== null) {
-                    $settings->statusFilter = $statusFilter;
-                    $settings->save();
                 }
             }
 

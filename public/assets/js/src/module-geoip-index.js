@@ -175,6 +175,7 @@ const ModuleGeoIP = {
                 onChange(value) {
                     ModuleGeoIP.dataTable.draw();
                     ModuleGeoIP.savedStatusFilter = value;
+                    ModuleGeoIP.saveStatusFilter(value);
                 },
             });
 
@@ -352,6 +353,22 @@ const ModuleGeoIP = {
                 },
             });
         }, 5000);
+    },
+
+    /**
+     * Save status filter preference to server.
+     */
+    saveStatusFilter(value) {
+        $.api({
+            url: `${Config.pbxUrl}/pbxcore/api/modules/ModuleGeoIP/save`,
+            on: 'now',
+            method: 'POST',
+            data: JSON.stringify({ statusFilter: value }),
+            beforeSend(settings) {
+                settings.contentType = 'application/json';
+                return settings;
+            },
+        });
     },
 
     /**

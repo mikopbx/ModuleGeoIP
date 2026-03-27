@@ -154,6 +154,7 @@ var ModuleGeoIP = {
         onChange: function onChange(value) {
           ModuleGeoIP.dataTable.draw();
           ModuleGeoIP.savedStatusFilter = value;
+          ModuleGeoIP.saveStatusFilter(value);
         }
       });
 
@@ -313,6 +314,23 @@ var ModuleGeoIP = {
         }
       });
     }, 5000);
+  },
+  /**
+   * Save status filter preference to server.
+   */
+  saveStatusFilter: function saveStatusFilter(value) {
+    $.api({
+      url: "".concat(Config.pbxUrl, "/pbxcore/api/modules/ModuleGeoIP/save"),
+      on: 'now',
+      method: 'POST',
+      data: JSON.stringify({
+        statusFilter: value
+      }),
+      beforeSend: function beforeSend(settings) {
+        settings.contentType = 'application/json';
+        return settings;
+      }
+    });
   },
   /**
    * Collect blocked country codes from data.
