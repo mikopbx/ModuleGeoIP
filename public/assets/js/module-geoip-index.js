@@ -150,10 +150,29 @@ var ModuleGeoIP = {
       // Add status filter dropdown next to search
       var filterHtml = "<select id=\"geoip-status-filter\" class=\"ui compact dropdown\">\n                <option value=\"all\">".concat(globalTranslate.mod_GeoIP_FilterAll, "</option>\n                <option value=\"allowed\">").concat(globalTranslate.mod_GeoIP_FilterAllowed, "</option>\n                <option value=\"blocked\">").concat(globalTranslate.mod_GeoIP_FilterBlocked, "</option>\n            </select>");
       $filterRow.find('.column:last').prepend(filterHtml);
+
+      // Register DataTable filter BEFORE dropdown init (so set selected triggers filtering)
+      $.fn.dataTable.ext.search.push(function (settings, data, dataIndex) {
+        if (settings.nTable.id !== 'geoip-countries-table') {
+          return true;
+        }
+        var filter = ModuleGeoIP.savedStatusFilter || 'all';
+        if (filter === 'all') {
+          return true;
+        }
+        var rowData = ModuleGeoIP.dataTable.row(dataIndex).data();
+        if (!rowData) {
+          return true;
+        }
+        if (filter === 'allowed') {
+          return !rowData.blocked;
+        }
+        return rowData.blocked;
+      });
       $('#geoip-status-filter').dropdown({
         onChange: function onChange(value) {
-          ModuleGeoIP.dataTable.draw();
           ModuleGeoIP.savedStatusFilter = value;
+          ModuleGeoIP.dataTable.draw();
           ModuleGeoIP.saveStatusFilter(value);
         }
       });
@@ -161,27 +180,10 @@ var ModuleGeoIP = {
       // Restore saved filter
       if (ModuleGeoIP.savedStatusFilter && ModuleGeoIP.savedStatusFilter !== 'all') {
         $('#geoip-status-filter').dropdown('set selected', ModuleGeoIP.savedStatusFilter);
+      } else {
+        ModuleGeoIP.dataTable.draw();
       }
     }
-
-    // Custom DataTable filter by blocked status
-    $.fn.dataTable.ext.search.push(function (settings, data, dataIndex) {
-      if (settings.nTable.id !== 'geoip-countries-table') {
-        return true;
-      }
-      var filter = $('#geoip-status-filter').val();
-      if (filter === 'all') {
-        return true;
-      }
-      var rowData = ModuleGeoIP.dataTable.row(dataIndex).data();
-      if (!rowData) {
-        return true;
-      }
-      if (filter === 'allowed') {
-        return !rowData.blocked;
-      }
-      return rowData.blocked;
-    });
 
     // Load status to set tooltip
     ModuleGeoIP.loadStatus();
