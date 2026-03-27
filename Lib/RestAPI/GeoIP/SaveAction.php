@@ -26,6 +26,7 @@ use Modules\ModuleGeoIP\Lib\GeoIPCountryList;
 use Modules\ModuleGeoIP\Lib\GeoIPCountryLookup;
 use Modules\ModuleGeoIP\Lib\GeoIPSetManager;
 use Modules\ModuleGeoIP\Models\GeoFilterCountries;
+use Modules\ModuleGeoIP\Models\ModuleGeoIP;
 
 /**
  * POST /geoip — save blocked countries list.
@@ -75,6 +76,16 @@ class SaveAction
                 if (!$record->save()) {
                     Util::sysLogMsg(__CLASS__, 'Failed to save country ' . $cc . ': '
                         . implode(', ', $record->getMessages()));
+                }
+            }
+
+            // Save status filter preference
+            $statusFilter = $data['statusFilter'] ?? null;
+            if ($statusFilter !== null && in_array($statusFilter, ['all', 'allowed', 'blocked'], true)) {
+                $settings = ModuleGeoIP::findFirst();
+                if ($settings !== null) {
+                    $settings->statusFilter = $statusFilter;
+                    $settings->save();
                 }
             }
 

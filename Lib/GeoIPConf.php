@@ -38,10 +38,17 @@ class GeoIPConf extends ConfigClass
     public function onAfterIptablesReload(): void
     {
         if (!PbxExtensionUtils::isEnabled('ModuleGeoIP')) {
+            Util::sysLogMsg(__CLASS__, 'onAfterIptablesReload: module is disabled, skipping');
             return;
         }
 
-        if (!GeoIPSetManager::isAvailable() || !GeoIPSetManager::setsExist()) {
+        if (!GeoIPSetManager::isAvailable()) {
+            Util::sysLogMsg(__CLASS__, 'onAfterIptablesReload: ipset not available, skipping');
+            return;
+        }
+
+        if (!GeoIPSetManager::setsExist()) {
+            Util::sysLogMsg(__CLASS__, 'onAfterIptablesReload: ipset sets do not exist yet, skipping');
             return;
         }
 
@@ -56,6 +63,8 @@ class GeoIPConf extends ConfigClass
         if (!empty($ip6tables)) {
             Processes::mwExec("$ip6tables -A INPUT -m set --match-set geoip_blocked_v6 src -j DROP");
         }
+
+        Util::sysLogMsg(__CLASS__, 'onAfterIptablesReload: GeoIP DROP rules added to iptables');
     }
 
     /**

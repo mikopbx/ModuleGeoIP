@@ -65,6 +65,7 @@ var ModuleGeoIP = {
       successTest: PbxApi.successTest,
       onSuccess: function onSuccess(response) {
         ModuleGeoIP.countries = response.data.countries || [];
+        ModuleGeoIP.savedStatusFilter = response.data.statusFilter || 'all';
         ModuleGeoIP.initDataTable();
         ModuleGeoIP.syncToggleAll();
       },
@@ -147,13 +148,19 @@ var ModuleGeoIP = {
       $filterRow.find('.column:first').append(ModuleGeoIP.$updateNowBtn);
 
       // Add status filter dropdown next to search
-      var filterHtml = "<select id=\"geoip-status-filter\" class=\"ui compact dropdown\" style=\"margin-right:8px;\">\n                <option value=\"all\">".concat(globalTranslate.mod_GeoIP_FilterAll, "</option>\n                <option value=\"allowed\">").concat(globalTranslate.mod_GeoIP_FilterAllowed, "</option>\n                <option value=\"blocked\">").concat(globalTranslate.mod_GeoIP_FilterBlocked, "</option>\n            </select>");
+      var filterHtml = "<select id=\"geoip-status-filter\" class=\"ui compact dropdown\">\n                <option value=\"all\">".concat(globalTranslate.mod_GeoIP_FilterAll, "</option>\n                <option value=\"allowed\">").concat(globalTranslate.mod_GeoIP_FilterAllowed, "</option>\n                <option value=\"blocked\">").concat(globalTranslate.mod_GeoIP_FilterBlocked, "</option>\n            </select>");
       $filterRow.find('.column:last').prepend(filterHtml);
       $('#geoip-status-filter').dropdown({
-        onChange: function onChange() {
+        onChange: function onChange(value) {
           ModuleGeoIP.dataTable.draw();
+          ModuleGeoIP.savedStatusFilter = value;
         }
       });
+
+      // Restore saved filter
+      if (ModuleGeoIP.savedStatusFilter && ModuleGeoIP.savedStatusFilter !== 'all') {
+        $('#geoip-status-filter').dropdown('set selected', ModuleGeoIP.savedStatusFilter);
+      }
     }
 
     // Custom DataTable filter by blocked status
@@ -337,7 +344,8 @@ var ModuleGeoIP = {
       on: 'now',
       method: 'POST',
       data: JSON.stringify({
-        blocked: ModuleGeoIP.getBlockedCodes()
+        blocked: ModuleGeoIP.getBlockedCodes(),
+        statusFilter: ModuleGeoIP.savedStatusFilter || 'all'
       }),
       beforeSend: function beforeSend(settings) {
         settings.contentType = 'application/json';

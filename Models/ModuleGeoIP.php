@@ -36,6 +36,12 @@ class ModuleGeoIP extends ModulesModelsBase
      */
     public $lastUpdate;
 
+    /**
+     * Status filter preference: all, allowed, blocked
+     * @Column(type="string", nullable=true, default="all")
+     */
+    public $statusFilter = 'all';
+
     public function initialize(): void
     {
         $this->setSource('m_ModuleGeoIP');

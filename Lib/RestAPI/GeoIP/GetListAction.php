@@ -22,6 +22,7 @@ namespace Modules\ModuleGeoIP\Lib\RestAPI\GeoIP;
 use MikoPBX\PBXCoreREST\Lib\PBXApiResult;
 use Modules\ModuleGeoIP\Lib\GeoIPCountryList;
 use Modules\ModuleGeoIP\Models\GeoFilterCountries;
+use Modules\ModuleGeoIP\Models\ModuleGeoIP;
 
 /**
  * GET /geoip — all countries with blocked status and admin country detection.
@@ -81,9 +82,14 @@ class GetListAction
                 ];
             }
 
+            $settings = ModuleGeoIP::findFirst();
+            $statusFilter = ($settings !== null && !empty($settings->statusFilter))
+                ? $settings->statusFilter : 'all';
+
             $result->success = true;
             $result->data = [
-                'countries' => $countries,
+                'countries'    => $countries,
+                'statusFilter' => $statusFilter,
             ];
         } catch (\Throwable $e) {
             \MikoPBX\Core\System\Util::sysLogMsg(__CLASS__, 'Failed to get country list: ' . $e->getMessage());

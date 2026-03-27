@@ -66,6 +66,7 @@ const ModuleGeoIP = {
             successTest: PbxApi.successTest,
             onSuccess(response) {
                 ModuleGeoIP.countries = response.data.countries || [];
+                ModuleGeoIP.savedStatusFilter = response.data.statusFilter || 'all';
                 ModuleGeoIP.initDataTable();
                 ModuleGeoIP.syncToggleAll();
             },
@@ -171,10 +172,16 @@ const ModuleGeoIP = {
             </select>`;
             $filterRow.find('.column:last').prepend(filterHtml);
             $('#geoip-status-filter').dropdown({
-                onChange() {
+                onChange(value) {
                     ModuleGeoIP.dataTable.draw();
+                    ModuleGeoIP.savedStatusFilter = value;
                 },
             });
+
+            // Restore saved filter
+            if (ModuleGeoIP.savedStatusFilter && ModuleGeoIP.savedStatusFilter !== 'all') {
+                $('#geoip-status-filter').dropdown('set selected', ModuleGeoIP.savedStatusFilter);
+            }
         }
 
         // Custom DataTable filter by blocked status
@@ -378,7 +385,10 @@ const ModuleGeoIP = {
             url: `${Config.pbxUrl}/pbxcore/api/modules/ModuleGeoIP/save`,
             on: 'now',
             method: 'POST',
-            data: JSON.stringify({ blocked: ModuleGeoIP.getBlockedCodes() }),
+            data: JSON.stringify({
+                blocked: ModuleGeoIP.getBlockedCodes(),
+                statusFilter: ModuleGeoIP.savedStatusFilter || 'all',
+            }),
             beforeSend(settings) {
                 settings.contentType = 'application/json';
                 return settings;
