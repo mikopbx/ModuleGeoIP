@@ -1,0 +1,63 @@
+stages:
+  - build
+  - release
+
+variables:
+  MODULE_ID: "ModuleGeoIP"
+
+build:
+  stage: build
+  image: composer:2
+  before_script:
+    - apk add --no-cache zip
+  script:
+    # Версия из тега или dev-fallback
+    - |
+      if [ -n "$CI_COMMIT_TAG" ]; then
+        VERSION="${CI_COMMIT_TAG#v}"
+      else
+        VERSION="0.0.${CI_PIPELINE_IID:-0}-dev"
+      fi
+      echo "VERSION=${VERSION}" >> build.env
+
+    # Composer install (без dev-зависимостей)
+    - composer install --no-dev --optimize-autoloader --no-interaction
+
+    # Подставить версию в module.json
+    - sed -i "s/%ModuleVersion%/${VERSION}/" module.json
+    - cat module.json
+
+    # Удалить файлы, которые не нужны в артефакте
+    - rm -rf .git .claude CLAUDE.md sessions .DS_Store .gitlab-ci.yml .mcp.json
+    - ls -la module.json
+  artifacts:
+    name: "${MODULE_ID}-${CI_COMMIT_TAG:-${CI_COMMIT_REF_SLUG}-build${CI_PIPELINE_IID}}"
+    paths:
+      - .
+    reports:
+      dotenv: build.env
+    expire_in: 30 days
+  rules:
+    - if: $CI_COMMIT_TAG
+    - if: $CI_COMMIT_BRANCH == "master"
+    - if: $CI_COMMIT_BRANCH == "develop"
+
+release:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/release-cli:latest
+  needs:
+    - job: build
+      artifacts: true
+  script:
+    - echo "Creating release for ${CI_COMMIT_TAG}"
+  release:
+    tag_name: $CI_COMMIT_TAG
+    name: "Release $CI_COMMIT_TAG"
+    description: "${MODULE_ID} ${CI_COMMIT_TAG}"
+    assets:
+      links:
+        - name: "${MODULE_ID}-${CI_COMMIT_TAG}.zip"
+          url: "${CI_PROJECT_URL}/-/jobs/artifacts/${CI_COMMIT_TAG}/download?job=build"
+          link_type: package
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
