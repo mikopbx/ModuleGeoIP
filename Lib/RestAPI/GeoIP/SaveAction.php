@@ -39,14 +39,18 @@ class SaveAction
         $result->processor = __METHOD__;
 
         try {
-            // Save status filter preference
-            $statusFilter = $data['statusFilter'] ?? null;
-            if ($statusFilter !== null && in_array($statusFilter, ['all', 'allowed', 'blocked'], true)) {
-                $settings = ModuleGeoIP::findFirst();
-                if ($settings !== null) {
+            // Save settings (status filter, data source)
+            $settings = ModuleGeoIP::findFirst();
+            if ($settings !== null) {
+                $statusFilter = $data['statusFilter'] ?? null;
+                if ($statusFilter !== null && in_array($statusFilter, ['all', 'allowed', 'blocked'], true)) {
                     $settings->statusFilter = $statusFilter;
-                    $settings->save();
                 }
+                $dataSource = $data['dataSource'] ?? null;
+                if ($dataSource !== null && in_array($dataSource, ['dbip', 'rir', 'ipdeny'], true)) {
+                    $settings->dataSource = $dataSource;
+                }
+                $settings->save();
             }
 
             // Save blocked countries only if explicitly provided
@@ -100,7 +104,14 @@ class SaveAction
                 $dataDir = GeoIPCountryLookup::getDataDir();
                 if (is_dir($dataDir)) {
                     GeoIPSetManager::rebuildSets($blockedCodes, $dataDir);
-                    // Reload firewall so onAfterIptablesReload injects DROP rules
+
+                    // Rebuild allowed sets (whitelist against CIDR overlaps)
+                    $allowedCodes = array_values(array_diff($validCodes, $blockedCodes));
+                    if (!empty($allowedCodes)) {
+                        GeoIPSetManager::rebuildAllowSets($allowedCodes, $dataDir);
+                    }
+
+                    // Reload firewall so onAfterIptablesReload injects chain rules
                     $iptablesConfClass = '\MikoPBX\Core\System\Configs\IptablesConf';
                     if (class_exists($iptablesConfClass) && method_exists($iptablesConfClass, 'reloadFirewall')) {
                         $iptablesConfClass::reloadFirewall();

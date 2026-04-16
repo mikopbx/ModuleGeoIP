@@ -26,15 +26,17 @@ use MikoPBX\Modules\PbxExtensionUtils;
 use Modules\ModuleGeoIP\Lib\GeoIPCountryList;
 use Modules\ModuleGeoIP\Lib\GeoIPCountryLookup;
 use Modules\ModuleGeoIP\Lib\GeoIPSetManager;
+use Modules\ModuleGeoIP\Lib\DBIPDataProvider;
+use Modules\ModuleGeoIP\Lib\RIRDataProvider;
 use Modules\ModuleGeoIP\Models\GeoFilterCountries;
 use Modules\ModuleGeoIP\Models\ModuleGeoIP;
 use GuzzleHttp\Client;
 use Phalcon\Di\Di;
 
 /**
- * Background worker that downloads CIDR zone files from ipdeny.com
- * and rebuilds ipset sets for blocked countries.
+ * Background worker that downloads CIDR zone files and rebuilds ipset sets.
  *
+ * Supports two data sources: RIR delegation files (default) and ipdeny.com.
  * Runs as PID-based worker (CHECK_BY_PID_NOT_ALERT pattern).
  * Download cycle: every 7 days + random jitter (0-3600s).
  */
@@ -112,14 +114,38 @@ class WorkerGeoIPUpdater extends WorkerBase
             return;
         }
 
-        // Download all country zone files
-        $allCodes = array_keys(GeoIPCountryList::getAll());
-        $this->downloadZoneFiles($allCodes, $dataDir);
+        // Determine data source
+        $settings = ModuleGeoIP::findFirst();
+        $dataSource = ($settings !== null) ? ($settings->dataSource ?? 'dbip') : 'dbip';
+
+        // Download zone files from chosen source
+        if ($dataSource === 'ipdeny') {
+            $allCodes = array_keys(GeoIPCountryList::getAll());
+            $this->downloadZoneFiles($allCodes, $dataDir);
+        } elseif ($dataSource === 'rir') {
+            RIRDataProvider::downloadAndBuild(
+                $dataDir,
+                fn(int $p) => $this->updateProgress($p),
+                fn()       => $this->needRestart
+            );
+        } else {
+            DBIPDataProvider::downloadAndBuild(
+                $dataDir,
+                fn(int $p) => $this->updateProgress($p),
+                fn()       => $this->needRestart
+            );
+        }
 
         // Rebuild ipset for blocked countries
         $blockedCodes = $this->getBlockedCodes();
         if (!empty($blockedCodes)) {
             GeoIPSetManager::rebuildSets($blockedCodes, $dataDir);
+
+            // Rebuild ipset for allowed countries (whitelist against CIDR overlaps)
+            $allowedCodes = $this->getAllowedCodes();
+            if (!empty($allowedCodes)) {
+                GeoIPSetManager::rebuildAllowSets($allowedCodes, $dataDir);
+            }
 
             // Reload firewall to apply new rules
             $this->reloadFirewall();
@@ -256,6 +282,24 @@ class WorkerGeoIPUpdater extends WorkerBase
         $records = GeoFilterCountries::find([
             'conditions' => 'blocked = :blocked:',
             'bind'       => ['blocked' => '1'],
+        ]);
+        foreach ($records as $record) {
+            $codes[] = strtoupper($record->country_code);
+        }
+        return $codes;
+    }
+
+    /**
+     * Get list of allowed country codes from DB.
+     *
+     * @return array
+     */
+    private function getAllowedCodes(): array
+    {
+        $codes = [];
+        $records = GeoFilterCountries::find([
+            'conditions' => 'blocked = :blocked:',
+            'bind'       => ['blocked' => '0'],
         ]);
         foreach ($records as $record) {
             $codes[] = strtoupper($record->country_code);

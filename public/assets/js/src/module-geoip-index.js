@@ -52,6 +52,13 @@ const ModuleGeoIP = {
             ModuleGeoIP.updateNow();
         });
 
+        // Data source dropdown
+        $('#geoip-data-source').dropdown({
+            onChange(value) {
+                Form.dataChanged();
+            },
+        });
+
         ModuleGeoIP.initializeForm();
     },
 
@@ -408,6 +415,7 @@ const ModuleGeoIP = {
             data: JSON.stringify({
                 blocked: ModuleGeoIP.getBlockedCodes(),
                 statusFilter: ModuleGeoIP.savedStatusFilter || 'all',
+                dataSource: $('#geoip-data-source').dropdown('get value') || 'rir',
             }),
             beforeSend(settings) {
                 settings.contentType = 'application/json';

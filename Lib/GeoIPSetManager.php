@@ -34,7 +34,16 @@ class GeoIPSetManager
     private const SET_V6     = 'geoip_blocked_v6';
     private const SET_V4_TMP = 'geoip_blocked_v4_tmp';
     private const SET_V6_TMP = 'geoip_blocked_v6_tmp';
-    private const MAX_ELEM   = 500000;
+
+    private const ALLOW_V4     = 'geoip_allowed_v4';
+    private const ALLOW_V6     = 'geoip_allowed_v6';
+    private const ALLOW_V4_TMP = 'geoip_allowed_v4_tmp';
+    private const ALLOW_V6_TMP = 'geoip_allowed_v6_tmp';
+
+    private const CHAIN_V4  = 'GEOIP_CHECK';
+    private const CHAIN_V6  = 'GEOIP_CHECK_V6';
+
+    private const MAX_ELEM   = 1500000;
     private const LOCK_FILE  = '/tmp/geoip_rebuild.lock';
 
     /**
@@ -47,7 +56,7 @@ class GeoIPSetManager
     }
 
     /**
-     * Check if main ipset sets exist in the kernel.
+     * Check if blocked ipset sets exist in the kernel.
      */
     public static function setsExist(): bool
     {
@@ -56,6 +65,19 @@ class GeoIPSetManager
             return false;
         }
         $retV4 = Processes::mwExec("$ipset list " . self::SET_V4 . " -name 2>/dev/null");
+        return $retV4 === 0;
+    }
+
+    /**
+     * Check if allowed ipset sets exist in the kernel.
+     */
+    public static function allowSetsExist(): bool
+    {
+        $ipset = Util::which('ipset');
+        if (empty($ipset)) {
+            return false;
+        }
+        $retV4 = Processes::mwExec("$ipset list " . self::ALLOW_V4 . " -name 2>/dev/null");
         return $retV4 === 0;
     }
 
@@ -117,6 +139,58 @@ class GeoIPSetManager
     }
 
     /**
+     * Rebuild ipset sets for allowed countries (whitelist).
+     *
+     * @param array $countryCodes Array of ISO 3166-1 alpha-2 codes to allow
+     * @param string $dataDir Directory containing downloaded .zone files
+     */
+    public static function rebuildAllowSets(array $countryCodes, string $dataDir): void
+    {
+        $ipset = Util::which('ipset');
+        if (empty($ipset)) {
+            return;
+        }
+
+        $lockFp = fopen(self::LOCK_FILE, 'c');
+        if ($lockFp === false) {
+            Util::sysLogMsg(__CLASS__, 'Failed to open lock file');
+            return;
+        }
+        if (!flock($lockFp, LOCK_EX)) {
+            Util::sysLogMsg(__CLASS__, 'Failed to acquire rebuild lock');
+            fclose($lockFp);
+            return;
+        }
+
+        try {
+            self::rebuildOneSet(
+                $ipset,
+                self::ALLOW_V4,
+                self::ALLOW_V4_TMP,
+                'hash:net',
+                'inet',
+                $countryCodes,
+                $dataDir,
+                '.zone'
+            );
+
+            self::rebuildOneSet(
+                $ipset,
+                self::ALLOW_V6,
+                self::ALLOW_V6_TMP,
+                'hash:net',
+                'inet6',
+                $countryCodes,
+                $dataDir,
+                '-v6.zone'
+            );
+        } finally {
+            flock($lockFp, LOCK_UN);
+            fclose($lockFp);
+        }
+    }
+
+    /**
      * Destroy all GeoIP ipset sets.
      */
     public static function destroySets(): void
@@ -129,19 +203,30 @@ class GeoIPSetManager
         $iptables  = Util::which('iptables');
         $ip6tables = Util::which('ip6tables');
 
-        // Remove iptables references first
+        // Remove custom chains from INPUT and destroy them
         if (!empty($iptables)) {
+            Processes::mwExec("$iptables -D INPUT -j " . self::CHAIN_V4 . " 2>/dev/null");
+            Processes::mwExec("$iptables -F " . self::CHAIN_V4 . " 2>/dev/null");
+            Processes::mwExec("$iptables -X " . self::CHAIN_V4 . " 2>/dev/null");
+            // Legacy: remove direct DROP rule if present from older versions
             Processes::mwExec("$iptables -D INPUT -m set --match-set " . self::SET_V4 . " src -j DROP 2>/dev/null");
         }
         if (!empty($ip6tables)) {
+            Processes::mwExec("$ip6tables -D INPUT -j " . self::CHAIN_V6 . " 2>/dev/null");
+            Processes::mwExec("$ip6tables -F " . self::CHAIN_V6 . " 2>/dev/null");
+            Processes::mwExec("$ip6tables -X " . self::CHAIN_V6 . " 2>/dev/null");
             Processes::mwExec("$ip6tables -D INPUT -m set --match-set " . self::SET_V6 . " src -j DROP 2>/dev/null");
         }
 
-        // Destroy sets
+        // Destroy all ipset sets
         Processes::mwExec("$ipset destroy " . self::SET_V4 . " 2>/dev/null");
         Processes::mwExec("$ipset destroy " . self::SET_V6 . " 2>/dev/null");
         Processes::mwExec("$ipset destroy " . self::SET_V4_TMP . " 2>/dev/null");
         Processes::mwExec("$ipset destroy " . self::SET_V6_TMP . " 2>/dev/null");
+        Processes::mwExec("$ipset destroy " . self::ALLOW_V4 . " 2>/dev/null");
+        Processes::mwExec("$ipset destroy " . self::ALLOW_V6 . " 2>/dev/null");
+        Processes::mwExec("$ipset destroy " . self::ALLOW_V4_TMP . " 2>/dev/null");
+        Processes::mwExec("$ipset destroy " . self::ALLOW_V6_TMP . " 2>/dev/null");
     }
 
     /**
@@ -152,9 +237,11 @@ class GeoIPSetManager
     public static function getStats(): array
     {
         $stats = [
-            'available' => self::isAvailable(),
-            'v4_count'  => 0,
-            'v6_count'  => 0,
+            'available'        => self::isAvailable(),
+            'v4_count'         => 0,
+            'v6_count'         => 0,
+            'v4_allowed_count' => 0,
+            'v6_allowed_count' => 0,
         ];
 
         $ipset = Util::which('ipset');
@@ -162,25 +249,35 @@ class GeoIPSetManager
             return $stats;
         }
 
-        // Parse number of entries from ipset list headers
-        $output = [];
-        Processes::mwExec("$ipset list " . self::SET_V4 . " -t 2>/dev/null", $output);
-        foreach ($output as $line) {
-            if (preg_match('/Number of entries:\s*(\d+)/', $line, $m)) {
-                $stats['v4_count'] = (int)$m[1];
-            }
-        }
+        $setsToCheck = [
+            self::SET_V4   => 'v4_count',
+            self::SET_V6   => 'v6_count',
+            self::ALLOW_V4 => 'v4_allowed_count',
+            self::ALLOW_V6 => 'v6_allowed_count',
+        ];
 
-        $output = [];
-        Processes::mwExec("$ipset list " . self::SET_V6 . " -t 2>/dev/null", $output);
-        foreach ($output as $line) {
-            if (preg_match('/Number of entries:\s*(\d+)/', $line, $m)) {
-                $stats['v6_count'] = (int)$m[1];
+        foreach ($setsToCheck as $setName => $statKey) {
+            $output = [];
+            Processes::mwExec("$ipset list $setName -t 2>/dev/null", $output);
+            foreach ($output as $line) {
+                if (preg_match('/Number of entries:\s*(\d+)/', $line, $m)) {
+                    $stats[$statKey] = (int)$m[1];
+                }
             }
         }
 
         return $stats;
     }
+
+    /**
+     * Get constant values for use in iptables rule injection.
+     */
+    public static function getChainV4(): string  { return self::CHAIN_V4; }
+    public static function getChainV6(): string  { return self::CHAIN_V6; }
+    public static function getSetV4(): string    { return self::SET_V4; }
+    public static function getSetV6(): string    { return self::SET_V6; }
+    public static function getAllowV4(): string   { return self::ALLOW_V4; }
+    public static function getAllowV6(): string   { return self::ALLOW_V6; }
 
     /**
      * Atomically rebuild a single ipset set.

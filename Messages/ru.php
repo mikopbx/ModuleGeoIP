@@ -46,4 +46,8 @@ return [
     'mod_GeoIP_FilterAll'               => 'Все страны',
     'mod_GeoIP_FilterAllowed'           => 'Только разрешённые',
     'mod_GeoIP_FilterBlocked'           => 'Только заблокированные',
+    'mod_GeoIP_DataSource'              => 'Источник данных',
+    'mod_GeoIP_DataSourceDBIP'          => 'DB-IP Lite (рекомендуется)',
+    'mod_GeoIP_DataSourceRIR'           => 'RIR delegation files',
+    'mod_GeoIP_DataSourceIpdeny'        => 'ipdeny.com (агрегированные)',
 ];

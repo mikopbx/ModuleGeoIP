@@ -52,6 +52,13 @@ var ModuleGeoIP = {
       e.preventDefault();
       ModuleGeoIP.updateNow();
     });
+
+    // Data source dropdown
+    $('#geoip-data-source').dropdown({
+      onChange: function onChange(value) {
+        Form.dataChanged();
+      }
+    });
     ModuleGeoIP.initializeForm();
   },
   /**
@@ -365,7 +372,8 @@ var ModuleGeoIP = {
       method: 'POST',
       data: JSON.stringify({
         blocked: ModuleGeoIP.getBlockedCodes(),
-        statusFilter: ModuleGeoIP.savedStatusFilter || 'all'
+        statusFilter: ModuleGeoIP.savedStatusFilter || 'all',
+        dataSource: $('#geoip-data-source').dropdown('get value') || 'rir'
       }),
       beforeSend: function beforeSend(settings) {
         settings.contentType = 'application/json';

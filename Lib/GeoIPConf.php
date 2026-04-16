@@ -52,19 +52,62 @@ class GeoIPConf extends ConfigClass
             return;
         }
 
-        // IPv4: drop traffic from blocked countries
+        $hasAllowSets = GeoIPSetManager::allowSetsExist();
+
+        // IPv4: custom chain with RETURN (allow) + DROP (block)
         $iptables = Util::which('iptables');
         if (!empty($iptables)) {
-            Processes::mwExec("$iptables -A INPUT -m set --match-set geoip_blocked_v4 src -j DROP");
+            $this->setupGeoIPChain(
+                $iptables,
+                GeoIPSetManager::getChainV4(),
+                GeoIPSetManager::getAllowV4(),
+                GeoIPSetManager::getSetV4(),
+                $hasAllowSets
+            );
         }
 
-        // IPv6: drop traffic from blocked countries
+        // IPv6: custom chain with RETURN (allow) + DROP (block)
         $ip6tables = Util::which('ip6tables');
         if (!empty($ip6tables)) {
-            Processes::mwExec("$ip6tables -A INPUT -m set --match-set geoip_blocked_v6 src -j DROP");
+            $this->setupGeoIPChain(
+                $ip6tables,
+                GeoIPSetManager::getChainV6(),
+                GeoIPSetManager::getAllowV6(),
+                GeoIPSetManager::getSetV6(),
+                $hasAllowSets
+            );
         }
 
-        Util::sysLogMsg(__CLASS__, 'onAfterIptablesReload: GeoIP DROP rules added to iptables');
+        Util::sysLogMsg(__CLASS__, 'onAfterIptablesReload: GeoIP chain rules added to iptables');
+    }
+
+    /**
+     * Create a custom iptables chain for GeoIP filtering.
+     *
+     * Chain logic: allowed countries → RETURN (continue to port rules), blocked → DROP.
+     */
+    private function setupGeoIPChain(
+        string $iptablesBin,
+        string $chainName,
+        string $allowSet,
+        string $blockSet,
+        bool   $hasAllowSets
+    ): void {
+        // Create chain (ignore error if already exists)
+        Processes::mwExec("$iptablesBin -N $chainName 2>/dev/null");
+        // Flush any old rules in the chain
+        Processes::mwExec("$iptablesBin -F $chainName");
+
+        // RETURN for allowed countries (skip DROP, continue to port-specific rules in INPUT)
+        if ($hasAllowSets) {
+            Processes::mwExec("$iptablesBin -A $chainName -m set --match-set $allowSet src -j RETURN");
+        }
+
+        // DROP for blocked countries
+        Processes::mwExec("$iptablesBin -A $chainName -m set --match-set $blockSet src -j DROP");
+
+        // Jump from INPUT to our chain
+        Processes::mwExec("$iptablesBin -A INPUT -j $chainName");
     }
 
     /**

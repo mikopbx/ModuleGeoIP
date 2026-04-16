@@ -46,4 +46,8 @@ return [
     'mod_GeoIP_FilterAll'               => 'All countries',
     'mod_GeoIP_FilterAllowed'           => 'Allowed only',
     'mod_GeoIP_FilterBlocked'           => 'Blocked only',
+    'mod_GeoIP_DataSource'              => 'Data source',
+    'mod_GeoIP_DataSourceDBIP'          => 'DB-IP Lite (recommended)',
+    'mod_GeoIP_DataSourceRIR'           => 'RIR delegation files',
+    'mod_GeoIP_DataSourceIpdeny'        => 'ipdeny.com (aggregated)',
 ];

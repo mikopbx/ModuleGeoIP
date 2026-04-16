@@ -60,6 +60,7 @@ class ModuleGeoIPController extends BaseController
         }
 
         $this->view->form = new ModuleGeoIPForm($settings);
+        $this->view->record = $settings;
         $this->view->pick("{$this->moduleDir}/App/Views/ModuleGeoIP/index");
     }
 

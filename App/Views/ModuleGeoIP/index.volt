@@ -6,12 +6,30 @@
         <p>{{ t._('mod_GeoIP_IpsetUnavailable') }}</p>
     </div>
 
-    {# Update button - will be moved into DataTable toolbar by JS #}
-    <button class="ui basic blue button" id="geoip-update-now" type="button"
-            data-tooltip="{{ t._('mod_GeoIP_NeverUpdated') }}" data-position="top left">
-        <i class="sync icon"></i>
-        {{ t._('mod_GeoIP_UpdateNow') }}
-    </button>
+    {# Data source selector and update button #}
+    <div class="ui equal width fields">
+        <div class="field">
+            <label>{{ t._('mod_GeoIP_DataSource') }}</label>
+            <div class="ui selection dropdown" id="geoip-data-source">
+                <input type="hidden" name="dataSource" value="{{ record.dataSource }}">
+                <i class="dropdown icon"></i>
+                <div class="default text">{{ t._('mod_GeoIP_DataSource') }}</div>
+                <div class="menu">
+                    <div class="item" data-value="dbip">{{ t._('mod_GeoIP_DataSourceDBIP') }}</div>
+                    <div class="item" data-value="rir">{{ t._('mod_GeoIP_DataSourceRIR') }}</div>
+                    <div class="item" data-value="ipdeny">{{ t._('mod_GeoIP_DataSourceIpdeny') }}</div>
+                </div>
+            </div>
+        </div>
+        <div class="field">
+            <label>&nbsp;</label>
+            <button class="ui basic blue button" id="geoip-update-now" type="button"
+                    data-tooltip="{{ t._('mod_GeoIP_NeverUpdated') }}" data-position="top left">
+                <i class="sync icon"></i>
+                {{ t._('mod_GeoIP_UpdateNow') }}
+            </button>
+        </div>
+    </div>
 
     {# Countries table - DataTables #}
     <table class="ui very compact selectable unstackable table" id="geoip-countries-table">

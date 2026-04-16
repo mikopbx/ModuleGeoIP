@@ -42,6 +42,12 @@ class ModuleGeoIP extends ModulesModelsBase
      */
     public $statusFilter = 'all';
 
+    /**
+     * CIDR data source: dbip, rir, ipdeny
+     * @Column(type="string", nullable=true, default="dbip")
+     */
+    public $dataSource = 'dbip';
+
     public function initialize(): void
     {
         $this->setSource('m_ModuleGeoIP');
