@@ -20,6 +20,7 @@
 namespace Modules\ModuleGeoIP\Lib\RestAPI\GeoIP;
 
 use MikoPBX\PBXCoreREST\Lib\PBXApiResult;
+use Modules\ModuleGeoIP\bin\WorkerGeoIPUpdater;
 use Modules\ModuleGeoIP\Lib\GeoIPSetManager;
 use Modules\ModuleGeoIP\Models\GeoFilterCountries;
 use Modules\ModuleGeoIP\Models\ModuleGeoIP;
@@ -72,6 +73,7 @@ class GetStatusAction
                 'ipsetAvailable'   => $ipsetStats['available'],
                 'progress'         => $progress,
                 'updateRequested'  => $updateRequested,
+                'isRunning'        => WorkerGeoIPUpdater::isAlreadyRunning(),
             ];
         } catch (\Throwable $e) {
             \MikoPBX\Core\System\Util::sysLogMsg(__CLASS__, 'Failed to get status: ' . $e->getMessage());

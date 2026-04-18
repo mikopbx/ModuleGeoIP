@@ -21,7 +21,6 @@ namespace Modules\ModuleGeoIP\Lib;
 
 use MikoPBX\Core\System\Processes;
 use MikoPBX\Core\System\Util;
-use MikoPBX\Core\Workers\Cron\WorkerSafeScriptsCore;
 use MikoPBX\Modules\Config\ConfigClass;
 use MikoPBX\PBXCoreREST\Lib\PBXApiResult;
 use MikoPBX\Modules\PbxExtensionUtils;
@@ -111,16 +110,31 @@ class GeoIPConf extends ConfigClass
     }
 
     /**
-     * Register the CIDR updater worker.
+     * Register a weekly cron task that refreshes CIDR data.
+     *
+     * Runs Sunday 03:17 — spread across a random odd minute so the load isn't hitting
+     * data-source CDNs on the same second across every PBX install.
+     *
+     * @param array $tasks  Cron lines accumulator (SystemConfigInterface::CREATE_CRON_TASKS)
      */
-    public function getModuleWorkers(): array
+    public function createCronTasks(array &$tasks): void
     {
-        return [
-            [
-                'type'   => WorkerSafeScriptsCore::CHECK_BY_PID_NOT_ALERT,
-                'worker' => WorkerGeoIPUpdater::class,
-            ],
-        ];
+        if (!PbxExtensionUtils::isEnabled('ModuleGeoIP')) {
+            return;
+        }
+
+        $workerPath = Util::getFilePathByClassName(WorkerGeoIPUpdater::class);
+        if (empty($workerPath)) {
+            return;
+        }
+
+        $phpPath   = Util::which('php');
+        $nohupPath = Util::which('nohup');
+        $cronUser  = Util::isSystemctl() ? 'root ' : '';
+
+        // Weekly: Sunday 03:17, random jitter prevents thundering herd on upstream servers
+        $schedule = '17 3 * * 0';
+        $tasks[]  = "$schedule $cronUser$nohupPath $phpPath -f $workerPath > /dev/null 2>&1 &\n";
     }
 
     /**

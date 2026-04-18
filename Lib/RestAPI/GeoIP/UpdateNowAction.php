@@ -19,12 +19,16 @@
 
 namespace Modules\ModuleGeoIP\Lib\RestAPI\GeoIP;
 
-use MikoPBX\Common\Providers\ManagedCacheProvider;
+use MikoPBX\Core\System\Processes;
+use MikoPBX\Core\System\Util;
 use MikoPBX\PBXCoreREST\Lib\PBXApiResult;
+use Modules\ModuleGeoIP\bin\WorkerGeoIPUpdater;
 use Phalcon\Di\Di;
 
 /**
- * POST /geoip:updateNow — reset worker cache to trigger immediate CIDR update.
+ * POST /geoip:updateNow — spawn the CIDR updater script as a detached process.
+ *
+ * The REST call returns immediately. Clients should poll GetStatusAction for progress.
  */
 class UpdateNowAction
 {
@@ -34,21 +38,41 @@ class UpdateNowAction
         $result->processor = __METHOD__;
 
         try {
-            // Reset worker cache to force immediate check
-            $di = Di::getDefault();
-            if ($di !== null && $di->has('managedCache')) {
-                /** @var ManagedCacheProvider $cache */
-                $cache = $di->getShared('managedCache');
-                $cache->delete('GeoIP:lastCheck');
-                $cache->set('GeoIP:updateRequested', true, 600);
+            // Don't start a second updater if one is already live
+            if (WorkerGeoIPUpdater::isAlreadyRunning()) {
+                $result->success = true;
+                $result->data = ['message' => 'Update already in progress'];
+                return $result;
             }
 
+            $workerPath = Util::getFilePathByClassName(WorkerGeoIPUpdater::class);
+            if (empty($workerPath) || !file_exists($workerPath)) {
+                $result->success = false;
+                $result->messages[] = 'Updater script not found';
+                return $result;
+            }
+
+            // Seed an initial progress value so the UI reacts immediately
+            try {
+                $di = Di::getDefault();
+                if ($di !== null && $di->has('managedCache')) {
+                    $di->getShared('managedCache')->set('GeoIP:progress', 0, 600);
+                    $di->getShared('managedCache')->set('GeoIP:updateRequested', true, 600);
+                }
+            } catch (\Throwable $e) {
+                // non-fatal
+            }
+
+            $phpPath = Util::which('php');
+            $command = "$phpPath -f $workerPath";
+            Processes::processWorker($command, '', WorkerGeoIPUpdater::PROC_TITLE, 'start');
+
             $result->success = true;
-            $result->data = ['message' => 'Update scheduled'];
+            $result->data = ['message' => 'Update started'];
         } catch (\Throwable $e) {
-            \MikoPBX\Core\System\Util::sysLogMsg(__CLASS__, 'Failed to schedule update: ' . $e->getMessage());
+            Util::sysLogMsg(__CLASS__, 'Failed to launch updater: ' . $e->getMessage());
             $result->success = false;
-            $result->messages[] = 'Failed to schedule update';
+            $result->messages[] = 'Failed to launch updater';
         }
 
         return $result;

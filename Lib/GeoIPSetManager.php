@@ -305,44 +305,56 @@ class GeoIPSetManager
         Processes::mwExec("$ipset destroy $tmpName 2>/dev/null");
         Processes::mwExec("$ipset create $tmpName $type family $family maxelem " . self::MAX_ELEM);
 
-        // Build restore data from CIDR files
-        $restoreData = "create $tmpName $type family $family maxelem " . self::MAX_ELEM . " -exist\n";
+        // Stream restore data directly to a temp file — avoids O(N) memory for N CIDRs
+        $tmpFile = tempnam('/tmp', 'geoip_restore_');
+        if ($tmpFile === false) {
+            Util::sysLogMsg(__CLASS__, 'Failed to create restore temp file');
+            Processes::mwExec("$ipset destroy $tmpName 2>/dev/null");
+            return;
+        }
+
+        $out = @fopen($tmpFile, 'wb');
+        if ($out === false) {
+            Util::sysLogMsg(__CLASS__, 'Failed to open restore temp file');
+            @unlink($tmpFile);
+            Processes::mwExec("$ipset destroy $tmpName 2>/dev/null");
+            return;
+        }
+
+        fwrite($out, "create $tmpName $type family $family maxelem " . self::MAX_ELEM . " -exist\n");
+
         $cidrPattern = ($family === 'inet6')
             ? '/^[0-9a-f:]+\/\d{1,3}$/i'
             : '/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,2}$/';
 
         foreach ($countryCodes as $cc) {
-            // Validate country code format (2 alpha chars only)
             if (!preg_match('/^[A-Za-z]{2}$/', $cc)) {
                 continue;
             }
-            $cc = strtolower($cc);
+            $cc   = strtolower($cc);
             $file = $dataDir . '/' . $cc . $suffix;
 
-            // Read file directly with error handling (no TOCTOU)
-            $lines = @file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-            if ($lines === false) {
+            $in = @fopen($file, 'rb');
+            if ($in === false) {
                 continue;
             }
-            foreach ($lines as $cidr) {
+            while (($cidr = fgets($in)) !== false) {
                 $cidr = trim($cidr);
                 if ($cidr === '' || $cidr[0] === '#') {
                     continue;
                 }
-                // Validate CIDR format before adding to ipset
                 if (!preg_match($cidrPattern, $cidr)) {
                     Util::sysLogMsg(__CLASS__, "Invalid CIDR skipped: $cidr");
                     continue;
                 }
-                $restoreData .= "add $tmpName $cidr\n";
+                fwrite($out, "add $tmpName $cidr\n");
             }
+            fclose($in);
         }
+        fclose($out);
 
-        // Bulk restore
-        $tmpFile = tempnam('/tmp', 'geoip_restore_');
-        file_put_contents($tmpFile, $restoreData);
         Processes::mwExec("$ipset restore -f $tmpFile -exist 2>/dev/null");
-        unlink($tmpFile);
+        @unlink($tmpFile);
 
         // Create main set if it doesn't exist
         Processes::mwExec("$ipset create $setName $type family $family maxelem " . self::MAX_ELEM . " -exist");

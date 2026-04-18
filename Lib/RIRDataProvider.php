@@ -30,6 +30,9 @@ use MikoPBX\Core\System\Util;
  *   registry|CC|type|start|value|date|status[|extensions]
  *   Example: ripencc|RU|ipv4|31.148.136.0|1024|20161115|assigned
  *   Where value = number of addresses (IPv4) or prefix length (IPv6)
+ *
+ * Streaming implementation: each file is downloaded to a temp path via Guzzle sink
+ * and parsed line-by-line through fgets, so a 100 MB RIR file never lives in memory.
  */
 class RIRDataProvider
 {
@@ -76,18 +79,33 @@ class RIRDataProvider
                 $progressCallback($percent);
             }
 
-            try {
-                $response = $client->get($url);
-                $body     = $response->getBody()->getContents();
+            $tmpFile = tempnam(sys_get_temp_dir(), 'rir_');
+            if ($tmpFile === false) {
+                Util::sysLogMsg(__CLASS__, 'Failed to create temp file for ' . $url);
+                continue;
+            }
 
-                if (strlen($body) > self::MAX_FILE_SIZE) {
-                    Util::sysLogMsg(__CLASS__, "RIR file too large: $url (" . strlen($body) . " bytes)");
+            try {
+                $client->get($url, [
+                    'sink'        => $tmpFile,
+                    'http_errors' => true,
+                ]);
+
+                $size = @filesize($tmpFile);
+                if ($size === false || $size === 0) {
+                    Util::sysLogMsg(__CLASS__, "Empty RIR file: $url");
+                    continue;
+                }
+                if ($size > self::MAX_FILE_SIZE) {
+                    Util::sysLogMsg(__CLASS__, "RIR file too large: $url ($size bytes)");
                     continue;
                 }
 
-                self::parseDelegationFile($body, $allocations);
+                self::parseDelegationFile($tmpFile, $allocations, $interruptCheck);
             } catch (\Throwable $e) {
                 Util::sysLogMsg(__CLASS__, "Failed to download RIR file $url: " . $e->getMessage());
+            } finally {
+                @unlink($tmpFile);
             }
         }
 
@@ -109,12 +127,23 @@ class RIRDataProvider
     }
 
     /**
-     * Parse a single RIR delegation file and merge results into $allocations.
+     * Parse a single RIR delegation file from disk, streaming line-by-line.
      */
-    private static function parseDelegationFile(string $body, array &$allocations): void
+    private static function parseDelegationFile(string $path, array &$allocations, ?callable $interruptCheck): void
     {
-        $lines = explode("\n", $body);
-        foreach ($lines as $line) {
+        $fh = @fopen($path, 'rb');
+        if ($fh === false) {
+            return;
+        }
+
+        $idx = 0;
+        while (($line = fgets($fh)) !== false) {
+            $idx++;
+            if (($idx % 10000) === 0 && $interruptCheck !== null && $interruptCheck()) {
+                fclose($fh);
+                return;
+            }
+
             $line = trim($line);
             // Skip empty, comments, headers, and summary lines
             if ($line === '' || $line[0] === '#' || str_contains($line, '|*|')) {
@@ -150,6 +179,8 @@ class RIRDataProvider
                 }
             }
         }
+
+        fclose($fh);
     }
 
     /**

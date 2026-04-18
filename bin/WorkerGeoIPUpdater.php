@@ -20,8 +20,9 @@
 namespace Modules\ModuleGeoIP\bin;
 require_once 'Globals.php';
 
+use MikoPBX\Common\Handlers\CriticalErrorsHandler;
+use MikoPBX\Core\System\Processes;
 use MikoPBX\Core\System\Util;
-use MikoPBX\Core\Workers\WorkerBase;
 use MikoPBX\Modules\PbxExtensionUtils;
 use Modules\ModuleGeoIP\Lib\GeoIPCountryList;
 use Modules\ModuleGeoIP\Lib\GeoIPCountryLookup;
@@ -34,91 +35,55 @@ use GuzzleHttp\Client;
 use Phalcon\Di\Di;
 
 /**
- * Background worker that downloads CIDR zone files and rebuilds ipset sets.
+ * One-shot CIDR updater.
  *
- * Supports two data sources: RIR delegation files (default) and ipdeny.com.
- * Runs as PID-based worker (CHECK_BY_PID_NOT_ALERT pattern).
- * Download cycle: every 7 days + random jitter (0-3600s).
+ * Invoked directly from cron (weekly) or from the REST "updateNow" action.
+ * Downloads the configured data source, rebuilds ipset sets, reloads iptables,
+ * writes progress/last-update metadata and exits. A PID-based guard prevents
+ * overlapping executions when an update is already running.
  */
-class WorkerGeoIPUpdater extends WorkerBase
+class WorkerGeoIPUpdater
 {
-    private const CACHE_KEY      = 'GeoIP:lastCheck';
-    private const CACHE_TTL      = 604800; // 7 days
-    private const CACHE_JITTER   = 3600;   // 1 hour random jitter
-    private const CHECK_INTERVAL = 10;     // Check every 10 seconds
+    public const PROC_TITLE = 'ModuleGeoIPUpdater';
 
-    private const IPDENY_V4_URL  = 'https://www.ipdeny.com/ipblocks/data/aggregated/%s-aggregated.zone';
-    private const IPDENY_V6_URL  = 'https://www.ipdeny.com/ipv6/ipaddresses/aggregated/%s-aggregated.zone';
+    private const IPDENY_V4_URL = 'https://www.ipdeny.com/ipblocks/data/aggregated/%s-aggregated.zone';
+    private const IPDENY_V6_URL = 'https://www.ipdeny.com/ipv6/ipaddresses/aggregated/%s-aggregated.zone';
 
-    private const HTTP_TIMEOUT   = 30;
-    private const MAX_FILE_SIZE  = 50 * 1024 * 1024; // 50 MB max per file
+    private const HTTP_TIMEOUT  = 30;
+    private const MAX_FILE_SIZE = 50 * 1024 * 1024;
+
+    private bool $interrupted = false;
 
     /**
-     * Worker entry point.
-     *
-     * @param array $argv Command line arguments
+     * Entry point.
      */
-    public function start(array $argv): void
+    public function run(): int
     {
-        while ($this->needRestart === false) {
-            try {
-                $this->checkAndUpdate();
-            } catch (\Throwable $e) {
-                Util::sysLogMsg(__CLASS__, 'Error: ' . $e->getMessage());
-            }
-            sleep(self::CHECK_INTERVAL);
+        // Abort gracefully on SIGTERM/SIGINT
+        if (function_exists('pcntl_async_signals')) {
+            pcntl_async_signals(true);
+            pcntl_signal(SIGTERM, fn() => $this->interrupted = true);
+            pcntl_signal(SIGINT,  fn() => $this->interrupted = true);
         }
-    }
 
-    /**
-     * Check if CIDR data needs updating and perform update if needed.
-     */
-    private function checkAndUpdate(): void
-    {
-        // Check if module is enabled (system level)
         if (!PbxExtensionUtils::isEnabled('ModuleGeoIP')) {
-            return;
-        }
-
-        // Check cache to see if update is needed
-        try {
-            $di = Di::getDefault();
-            if ($di !== null && $di->has('managedCache')) {
-                $cache = $di->getShared('managedCache');
-                $lastCheck = $cache->get(self::CACHE_KEY);
-                if ($lastCheck !== null) {
-                    return; // Not yet expired
-                }
-            }
-        } catch (\Throwable $e) {
-            // Cache unavailable, skip check
-        }
-
-        Util::sysLogMsg(__CLASS__, 'Starting CIDR data update');
-
-        // Clear update requested flag
-        try {
-            $di = Di::getDefault();
-            if ($di !== null && $di->has('managedCache')) {
-                $mc = $di->getShared('managedCache');
-                $mc->delete('GeoIP:updateRequested');
-            }
-        } catch (\Throwable $e) {
-            // ignore
+            Util::sysLogMsg(__CLASS__, 'Module disabled, skipping update');
+            return 0;
         }
 
         $dataDir = GeoIPCountryLookup::getDataDir();
         Util::mwMkdir($dataDir);
         if (!is_dir($dataDir) || !is_writable($dataDir)) {
-            Util::sysLogMsg(__CLASS__, "Data directory $dataDir is not writable, aborting update");
-            return;
+            Util::sysLogMsg(__CLASS__, "Data directory $dataDir is not writable, aborting");
+            return 1;
         }
 
-        // Determine data source
-        $settings = ModuleGeoIP::findFirst();
+        Util::sysLogMsg(__CLASS__, 'Starting CIDR data update');
+        $this->clearUpdateRequestedFlag();
+
+        $settings   = ModuleGeoIP::findFirst();
         $dataSource = ($settings !== null) ? ($settings->dataSource ?? 'dbip') : 'dbip';
 
-        // Download zone files from chosen source
         if ($dataSource === 'ipdeny') {
             $allCodes = array_keys(GeoIPCountryList::getAll());
             $this->downloadZoneFiles($allCodes, $dataDir);
@@ -126,32 +91,34 @@ class WorkerGeoIPUpdater extends WorkerBase
             RIRDataProvider::downloadAndBuild(
                 $dataDir,
                 fn(int $p) => $this->updateProgress($p),
-                fn()       => $this->needRestart
+                fn()       => $this->interrupted
             );
         } else {
             DBIPDataProvider::downloadAndBuild(
                 $dataDir,
                 fn(int $p) => $this->updateProgress($p),
-                fn()       => $this->needRestart
+                fn()       => $this->interrupted
             );
         }
 
-        // Rebuild ipset for blocked countries
+        if ($this->interrupted) {
+            Util::sysLogMsg(__CLASS__, 'Update interrupted');
+            $this->clearProgress();
+            return 130;
+        }
+
         $blockedCodes = $this->getBlockedCodes();
         if (!empty($blockedCodes)) {
             GeoIPSetManager::rebuildSets($blockedCodes, $dataDir);
 
-            // Rebuild ipset for allowed countries (whitelist against CIDR overlaps)
             $allowedCodes = $this->getAllowedCodes();
             if (!empty($allowedCodes)) {
                 GeoIPSetManager::rebuildAllowSets($allowedCodes, $dataDir);
             }
 
-            // Reload firewall to apply new rules
             $this->reloadFirewall();
         }
 
-        // Update last update timestamp
         $settings = ModuleGeoIP::findFirst();
         if ($settings === null) {
             $settings = new ModuleGeoIP();
@@ -159,27 +126,13 @@ class WorkerGeoIPUpdater extends WorkerBase
         $settings->lastUpdate = date('c');
         $settings->save();
 
-        // Clear progress, set cache with TTL + jitter
-        try {
-            $di = Di::getDefault();
-            if ($di !== null && $di->has('managedCache')) {
-                $mc = $di->getShared('managedCache');
-                $mc->delete('GeoIP:progress');
-                $ttl = self::CACHE_TTL + random_int(0, self::CACHE_JITTER);
-                $mc->set(self::CACHE_KEY, time(), $ttl);
-            }
-        } catch (\Throwable $e) {
-            Util::sysLogMsg(__CLASS__, 'Failed to update cache: ' . $e->getMessage());
-        }
-
+        $this->clearProgress();
         Util::sysLogMsg(__CLASS__, 'CIDR data update completed');
+        return 0;
     }
 
     /**
-     * Download IPv4 and IPv6 zone files for given countries.
-     *
-     * @param array $countryCodes ISO 3166-1 alpha-2 codes
-     * @param string $dataDir Target directory
+     * Download IPv4 and IPv6 zone files for given countries (ipdeny source).
      */
     private function downloadZoneFiles(array $countryCodes, string $dataDir): void
     {
@@ -191,25 +144,20 @@ class WorkerGeoIPUpdater extends WorkerBase
 
         $total = count($countryCodes);
         foreach ($countryCodes as $index => $cc) {
-            if ($this->needRestart) {
+            if ($this->interrupted) {
                 break;
             }
 
-            // Update progress in cache
             $progress = (int)round(($index / $total) * 100);
             $this->updateProgress($progress);
 
             $ccLower = strtolower($cc);
-
-            // Download IPv4
             $this->downloadFile(
                 $client,
                 sprintf(self::IPDENY_V4_URL, $ccLower),
                 $dataDir . '/' . $ccLower . '.zone',
                 $cc
             );
-
-            // Download IPv6
             $this->downloadFile(
                 $client,
                 sprintf(self::IPDENY_V6_URL, $ccLower),
@@ -220,62 +168,71 @@ class WorkerGeoIPUpdater extends WorkerBase
     }
 
     /**
-     * Download a single zone file.
-     *
-     * @param Client $client HTTP client
-     * @param string $url Source URL
-     * @param string $destPath Destination file path
-     * @param string $label Label for logging
+     * Stream a single ipdeny zone file to disk, validate line-by-line, atomic-rename.
      */
     private function downloadFile(Client $client, string $url, string $destPath, string $label): void
     {
+        $realDir     = realpath(dirname($destPath));
+        $expectedDir = realpath(GeoIPCountryLookup::getDataDir());
+        if ($realDir === false || $expectedDir === false || strpos($realDir, $expectedDir) !== 0) {
+            Util::sysLogMsg(__CLASS__, "Path traversal attempt for $label: $destPath");
+            return;
+        }
+
+        $tmpPath = $destPath . '.tmp';
         try {
-            // Validate destination path is within expected directory
-            $realDir = realpath(dirname($destPath));
-            $expectedDir = realpath(GeoIPCountryLookup::getDataDir());
-            if ($realDir === false || $expectedDir === false || strpos($realDir, $expectedDir) !== 0) {
-                Util::sysLogMsg(__CLASS__, "Path traversal attempt for $label: $destPath");
-                return;
-            }
+            $client->get($url, [
+                'sink'        => $tmpPath,
+                'http_errors' => true,
+            ]);
 
-            $response = $client->get($url);
-            $body = $response->getBody()->getContents();
-
-            if (empty(trim($body))) {
+            $size = @filesize($tmpPath);
+            if ($size === false || $size === 0) {
                 Util::sysLogMsg(__CLASS__, "Empty response for $label, skipping");
+                @unlink($tmpPath);
+                return;
+            }
+            if ($size > self::MAX_FILE_SIZE) {
+                Util::sysLogMsg(__CLASS__, "Response too large for $label: $size bytes");
+                @unlink($tmpPath);
                 return;
             }
 
-            // Validate response size
-            if (strlen($body) > self::MAX_FILE_SIZE) {
-                Util::sysLogMsg(__CLASS__, "Response too large for $label: " . strlen($body) . " bytes");
+            $fh = @fopen($tmpPath, 'rb');
+            if ($fh === false) {
+                Util::sysLogMsg(__CLASS__, "Failed to open temp file for $label");
+                @unlink($tmpPath);
                 return;
             }
-
-            // Validate CIDR format — each non-empty line must be a valid CIDR
-            $lines = explode("\n", $body);
-            foreach ($lines as $line) {
+            $valid = true;
+            while (($line = fgets($fh)) !== false) {
                 $line = trim($line);
                 if ($line === '' || $line[0] === '#') {
                     continue;
                 }
                 if (!preg_match('/^[0-9a-f.:]+\/\d{1,3}$/i', $line)) {
                     Util::sysLogMsg(__CLASS__, "Invalid CIDR format in $label: $line");
-                    return;
+                    $valid = false;
+                    break;
                 }
             }
+            fclose($fh);
 
-            file_put_contents($destPath, $body);
+            if (!$valid) {
+                @unlink($tmpPath);
+                return;
+            }
+
+            if (!@rename($tmpPath, $destPath)) {
+                Util::sysLogMsg(__CLASS__, "Failed to rename temp file for $label");
+                @unlink($tmpPath);
+            }
         } catch (\Throwable $e) {
             Util::sysLogMsg(__CLASS__, "Failed to download $label: " . $e->getMessage());
+            @unlink($tmpPath);
         }
     }
 
-    /**
-     * Get list of blocked country codes from DB.
-     *
-     * @return array
-     */
     private function getBlockedCodes(): array
     {
         $codes = [];
@@ -289,11 +246,6 @@ class WorkerGeoIPUpdater extends WorkerBase
         return $codes;
     }
 
-    /**
-     * Get list of allowed country codes from DB.
-     *
-     * @return array
-     */
     private function getAllowedCodes(): array
     {
         $codes = [];
@@ -307,9 +259,6 @@ class WorkerGeoIPUpdater extends WorkerBase
         return $codes;
     }
 
-    /**
-     * Trigger firewall reload.
-     */
     private function reloadFirewall(): void
     {
         $iptablesConfClass = '\MikoPBX\Core\System\Configs\IptablesConf';
@@ -318,25 +267,66 @@ class WorkerGeoIPUpdater extends WorkerBase
         }
     }
 
-    /**
-     * Update download progress in managed cache.
-     */
     private function updateProgress(int $progress): void
     {
         try {
             $di = Di::getDefault();
             if ($di !== null && $di->has('managedCache')) {
-                $cache = $di->getShared('managedCache');
-                $cache->set('GeoIP:progress', $progress, 600);
+                $di->getShared('managedCache')->set('GeoIP:progress', $progress, 600);
             }
         } catch (\Throwable $e) {
             Util::sysLogMsg(__CLASS__, 'Failed to update progress: ' . $e->getMessage());
         }
     }
 
+    private function clearProgress(): void
+    {
+        try {
+            $di = Di::getDefault();
+            if ($di !== null && $di->has('managedCache')) {
+                $di->getShared('managedCache')->delete('GeoIP:progress');
+            }
+        } catch (\Throwable $e) {
+            // ignore
+        }
+    }
+
+    private function clearUpdateRequestedFlag(): void
+    {
+        try {
+            $di = Di::getDefault();
+            if ($di !== null && $di->has('managedCache')) {
+                $di->getShared('managedCache')->delete('GeoIP:updateRequested');
+            }
+        } catch (\Throwable $e) {
+            // ignore
+        }
+    }
+
+    /**
+     * Detect if another updater process is already running by looking at process titles.
+     */
+    public static function isAlreadyRunning(): bool
+    {
+        $pid = Processes::getPidOfProcess(self::PROC_TITLE, (string)getmypid());
+        return !empty($pid);
+    }
 }
 
-if (isset($argv) && count($argv) !== 1
-    && Util::getFilePathByClassName(WorkerGeoIPUpdater::class) === $argv[0]) {
-    WorkerGeoIPUpdater::startWorker($argv ?? []);
+// Bootstrap: run the updater once when invoked as a CLI script.
+if (isset($argv) && basename($argv[0] ?? '') === basename(__FILE__)) {
+    cli_set_process_title(WorkerGeoIPUpdater::PROC_TITLE);
+
+    if (WorkerGeoIPUpdater::isAlreadyRunning()) {
+        Util::sysLogMsg(WorkerGeoIPUpdater::class, 'Another update is already running, exiting');
+        exit(0);
+    }
+
+    try {
+        $exitCode = (new WorkerGeoIPUpdater())->run();
+        exit($exitCode);
+    } catch (\Throwable $e) {
+        CriticalErrorsHandler::handleExceptionWithSyslog($e);
+        exit(1);
+    }
 }
