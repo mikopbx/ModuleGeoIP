@@ -83,13 +83,23 @@ class GeoIPConf extends ConfigClass
     /**
      * Create a custom iptables chain for GeoIP filtering.
      *
-     * Chain logic: allowed countries → RETURN (continue to port rules), blocked → DROP.
-     * The chain is inserted at position 1 of INPUT so it runs BEFORE the
-     * conntrack ESTABLISHED,RELATED accept — otherwise an attacker who kept
-     * a UDP "stream" alive would bypass GeoIP entirely. fail2ban will push
-     * its own jumps ahead of us on restart, which is fine.
-     * The INPUT jump is made idempotent by first deleting any pre-existing
-     * jump, so repeated firewall reloads don't accumulate duplicates.
+     * Architectural contract: GeoIP filtering sits AFTER the specific subnet /
+     * provider ACCEPT rules (admin IPs like 161.142.139.132, SIP providers,
+     * 127.0.0.1) and BEFORE the 0.0.0.0/0 catch-all ACCEPT that opens SIP
+     * ports to the Internet. Trusted peers therefore always win; only
+     * unclassified Internet traffic is subject to country filtering.
+     *
+     * This placement is achieved by letting Core invoke the hook between
+     * `addMainFirewallRules()` and the catch-all append (see IptablesConf::
+     * applyConfig): when the hook runs, INPUT ends at the specific-ACCEPT
+     * rules, so -A appends GEOIP_CHECK in exactly the right slot, and Core
+     * then appends catch-all after us.
+     *
+     * Chain logic: allowed → RETURN (continue to later INPUT rules), blocked
+     * → DROP, everything else → fall through and let catch-all decide.
+     *
+     * Idempotence: repeated firewall reloads must not stack duplicate INPUT
+     * jumps, so any pre-existing `-j GEOIP_CHECK` entries are deleted first.
      */
     private function setupGeoIPChain(
         string $iptablesBin,
@@ -111,12 +121,13 @@ class GeoIPConf extends ConfigClass
         // DROP for blocked countries
         Processes::mwExec("$iptablesBin -A $chainName -m set --match-set $blockSet src -j DROP");
 
-        // Remove any existing jumps (loop until -D reports no match) so we never
-        // accumulate duplicates across reloads, then insert at the top of INPUT
+        // Strip any prior jumps (loop until -D fails) so reloads don't duplicate
         while (Processes::mwExec("$iptablesBin -D INPUT -j $chainName 2>/dev/null") === 0) {
             // keep deleting
         }
-        Processes::mwExec("$iptablesBin -I INPUT 1 -j $chainName");
+        // Append: Core runs this hook between specific ACCEPTs and catch-all,
+        // so appending places GEOIP_CHECK exactly in the contracted slot
+        Processes::mwExec("$iptablesBin -A INPUT -j $chainName");
     }
 
     /**
