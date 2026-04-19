@@ -84,6 +84,12 @@ class GeoIPConf extends ConfigClass
      * Create a custom iptables chain for GeoIP filtering.
      *
      * Chain logic: allowed countries → RETURN (continue to port rules), blocked → DROP.
+     * The chain is inserted at position 1 of INPUT so it runs BEFORE the
+     * conntrack ESTABLISHED,RELATED accept — otherwise an attacker who kept
+     * a UDP "stream" alive would bypass GeoIP entirely. fail2ban will push
+     * its own jumps ahead of us on restart, which is fine.
+     * The INPUT jump is made idempotent by first deleting any pre-existing
+     * jump, so repeated firewall reloads don't accumulate duplicates.
      */
     private function setupGeoIPChain(
         string $iptablesBin,
@@ -105,8 +111,12 @@ class GeoIPConf extends ConfigClass
         // DROP for blocked countries
         Processes::mwExec("$iptablesBin -A $chainName -m set --match-set $blockSet src -j DROP");
 
-        // Jump from INPUT to our chain
-        Processes::mwExec("$iptablesBin -A INPUT -j $chainName");
+        // Remove any existing jumps (loop until -D reports no match) so we never
+        // accumulate duplicates across reloads, then insert at the top of INPUT
+        while (Processes::mwExec("$iptablesBin -D INPUT -j $chainName 2>/dev/null") === 0) {
+            // keep deleting
+        }
+        Processes::mwExec("$iptablesBin -I INPUT 1 -j $chainName");
     }
 
     /**
