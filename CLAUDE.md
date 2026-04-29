@@ -80,6 +80,10 @@ ssh serber@boffart.miko.ru "redis-cli -n 4 FLUSHDB && rm -rf /var/tmp/www_cache/
 
 - `bin/Globals.php` — симлинк на `/usr/www/src/Core/Config/Globals.php` (создаётся при установке модуля, при ручном деплое нужно создать)
 - CSS/JS ассеты — через симлинки в `/usr/www/sites/admin-cabinet/assets/{css,js}/cache/ModuleGeoIP/`
+- Симлинки ассетов создаются `PbxExtensionUtils::createAssetsLinks()` при установке/включении и могут пропадать после прошивки/ручного scp-деплоя. Симптом: 404 на `module-geoip-index.js`/`module-geoip.css`, в консоли «Refused to apply style … MIME type 'text/html'», UI пустой / список стран не отображается. Восстановление:
+  ```bash
+  ssh serber@boffart.miko.ru "MODDIR=/storage/usbdisk1/mikopbx/custom_modules/ModuleGeoIP/public/assets; CACHE=/usr/www/sites/admin-cabinet/assets; ln -sf \$MODDIR/img \$CACHE/img/cache/ModuleGeoIP && ln -sf \$MODDIR/css \$CACHE/css/cache/ModuleGeoIP && ln -sf \$MODDIR/js \$CACHE/js/cache/ModuleGeoIP"
+  ```
 - Nginx кэш браузера: `expires 3d` — для обновления стилей нужен hard refresh (Ctrl+Shift+R)
 
 ## REST API Auth
@@ -88,6 +92,13 @@ ssh serber@boffart.miko.ru "redis-cli -n 4 FLUSHDB && rm -rf /var/tmp/www_cache/
 - `true` — требует Bearer token (или localhost)
 - `false` — публичный endpoint без авторизации
 Все маршруты модуля используют `true`. UI работает через сессию браузера (запросы идут с localhost через php-fpm).
+
+REST endpoints (`base = /pbxcore/api/modules/ModuleGeoIP`):
+- `GET  $base/getList` — список стран + статус блокировки
+- `POST $base/save` — сохранение настроек
+- `GET  $base/getStatus` — состояние ipset/cron
+- `POST $base/updateNow` — ручное обновление CIDR
+Диспетчер actions: `Lib/RestAPI/GeoIPManagementProcessor.php`.
 
 ## Reference Modules
 
