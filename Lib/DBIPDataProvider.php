@@ -29,19 +29,35 @@ use MikoPBX\Core\System\Util;
  * Free, updated monthly, CC BY 4.0 license, no registration required.
  * Has sub-allocation granularity (resolves IPs within large blocks to actual countries).
  *
- * Streaming implementation: compressed CSV is downloaded to a temp file via Guzzle sink,
- * then read line-by-line through gzopen/gzgets so peak memory stays O(output size) instead
- * of O(raw CSV size).
+ * Source selection order:
+ *   1. Bundled offline copy at <module>/db/dbip-country-lite.csv.gz (refreshed at build time).
+ *   2. Live download from download.db-ip.com — fallback only when the bundled file is missing.
+ *
+ * Streaming implementation: gzipped CSV is read line-by-line through gzopen/gzgets so peak
+ * memory stays O(output size) instead of O(raw CSV size).
  */
 class DBIPDataProvider
 {
     private const CSV_URL_TEMPLATE = 'https://download.db-ip.com/free/dbip-country-lite-%s.csv.gz';
     private const HTTP_TIMEOUT     = 120;
-    private const MAX_COMPRESSED   = 50 * 1024 * 1024;  // 50 MB compressed cap
+    private const MIN_COMPRESSED   = 1 * 1024 * 1024;   // 1 MB lower bound (real file is ~4 MB)
+    private const MAX_COMPRESSED   = 50 * 1024 * 1024;  // 50 MB upper bound
     private const MAX_LINES        = 5_000_000;         // hard safety cap on CSV rows
+    private const OFFLINE_FILE     = 'dbip-country-lite.csv.gz';
+    private const STALE_WARN_DAYS  = 90;                // log warning when bundled file is older than this
 
     /**
-     * Download DB-IP CSV, parse IP ranges, convert to CIDR, write zone files.
+     * Path to the bundled offline DB-IP Lite copy shipped with the module.
+     */
+    public static function getOfflineDbPath(): string
+    {
+        return dirname(__DIR__) . '/db/' . self::OFFLINE_FILE;
+    }
+
+    /**
+     * Build zone files from DB-IP Lite data.
+     *
+     * Prefers the bundled offline copy; falls back to network download if it's missing.
      *
      * @param string $dataDir Directory to write zone files
      * @param callable|null $progressCallback fn(int $percent)
@@ -52,77 +68,124 @@ class DBIPDataProvider
         ?callable $progressCallback = null,
         ?callable $interruptCheck = null
     ): void {
+        if ($progressCallback !== null) {
+            $progressCallback(5);
+        }
+
+        $offlinePath = self::getOfflineDbPath();
+        $sourcePath  = null;
+        $cleanupTmp  = false;
+
+        if (is_file($offlinePath) && filesize($offlinePath) > 0) {
+            self::warnIfStale($offlinePath);
+            Util::sysLogMsg(__CLASS__, "Using bundled offline DB-IP CSV: $offlinePath");
+            $sourcePath = $offlinePath;
+        } else {
+            Util::sysLogMsg(__CLASS__, 'Offline DB-IP CSV not bundled, falling back to live download');
+            $sourcePath = self::downloadFreshCopy($interruptCheck);
+            if ($sourcePath === null) {
+                Util::sysLogMsg(__CLASS__, 'Failed to obtain DB-IP CSV from any source');
+                return;
+            }
+            $cleanupTmp = true;
+        }
+
+        try {
+            $compressedSize = filesize($sourcePath);
+            if ($compressedSize === false || $compressedSize < self::MIN_COMPRESSED) {
+                Util::sysLogMsg(__CLASS__, "DB-IP CSV too small or unreadable: " . var_export($compressedSize, true));
+                return;
+            }
+            if ($compressedSize > self::MAX_COMPRESSED) {
+                Util::sysLogMsg(__CLASS__, "DB-IP CSV too large: $compressedSize bytes");
+                return;
+            }
+
+            if ($progressCallback !== null) {
+                $progressCallback(30);
+            }
+
+            if ($interruptCheck !== null && $interruptCheck()) {
+                return;
+            }
+
+            $allocations = self::parseGzCsv($sourcePath, $progressCallback, $interruptCheck);
+
+            if (empty($allocations)) {
+                Util::sysLogMsg(__CLASS__, 'No allocations parsed from DB-IP CSV');
+                return;
+            }
+
+            if ($progressCallback !== null) {
+                $progressCallback(90);
+            }
+
+            self::cleanZoneFiles($dataDir);
+            self::writeZoneFiles($allocations, $dataDir);
+
+            if ($progressCallback !== null) {
+                $progressCallback(100);
+            }
+
+            Util::sysLogMsg(__CLASS__, 'DB-IP data processed, ' . count($allocations) . ' countries');
+        } finally {
+            if ($cleanupTmp) {
+                @unlink($sourcePath);
+            }
+        }
+    }
+
+    /**
+     * Emit a syslog warning if the bundled CSV is older than STALE_WARN_DAYS.
+     * Doesn't block — the package owner is expected to refresh manually.
+     */
+    private static function warnIfStale(string $path): void
+    {
+        $mtime = @filemtime($path);
+        if ($mtime === false) {
+            return;
+        }
+        $ageDays = (int)floor((time() - $mtime) / 86400);
+        if ($ageDays > self::STALE_WARN_DAYS) {
+            Util::sysLogMsg(__CLASS__, "Bundled DB-IP CSV is $ageDays days old, consider updating the module package");
+        }
+    }
+
+    /**
+     * Download a fresh gzipped CSV to a temp file.
+     *
+     * @return string|null Path to temp file (caller deletes), or null on failure
+     */
+    private static function downloadFreshCopy(?callable $interruptCheck): ?string
+    {
         $client = new Client([
             'timeout'         => self::HTTP_TIMEOUT,
             'connect_timeout' => 15,
             'verify'          => true,
         ]);
 
-        if ($progressCallback !== null) {
-            $progressCallback(5);
-        }
-
-        // Download compressed CSV to a temporary file (streamed, no in-memory buffer)
         $tmpGz = tempnam(sys_get_temp_dir(), 'dbip_');
         if ($tmpGz === false) {
             Util::sysLogMsg(__CLASS__, 'Failed to create temp file for DB-IP download');
-            return;
+            return null;
         }
 
         $url = sprintf(self::CSV_URL_TEMPLATE, date('Y-m'));
         if (!self::downloadToFile($client, $url, $tmpGz)) {
-            // Fallback to previous month
             $prevMonth = date('Y-m', strtotime('-1 month'));
             $url = sprintf(self::CSV_URL_TEMPLATE, $prevMonth);
             if (!self::downloadToFile($client, $url, $tmpGz)) {
-                Util::sysLogMsg(__CLASS__, 'Failed to download DB-IP CSV');
                 @unlink($tmpGz);
-                return;
+                return null;
             }
-        }
-
-        $compressedSize = @filesize($tmpGz);
-        if ($compressedSize === false || $compressedSize === 0) {
-            Util::sysLogMsg(__CLASS__, 'Empty DB-IP download');
-            @unlink($tmpGz);
-            return;
-        }
-        if ($compressedSize > self::MAX_COMPRESSED) {
-            Util::sysLogMsg(__CLASS__, "DB-IP CSV too large: $compressedSize bytes");
-            @unlink($tmpGz);
-            return;
-        }
-
-        if ($progressCallback !== null) {
-            $progressCallback(30);
         }
 
         if ($interruptCheck !== null && $interruptCheck()) {
             @unlink($tmpGz);
-            return;
+            return null;
         }
 
-        // Stream-parse gzipped CSV into per-country CIDR arrays
-        $allocations = self::parseGzCsv($tmpGz, $progressCallback, $interruptCheck);
-        @unlink($tmpGz);
-
-        if (empty($allocations)) {
-            Util::sysLogMsg(__CLASS__, 'No allocations parsed from DB-IP CSV');
-            return;
-        }
-
-        if ($progressCallback !== null) {
-            $progressCallback(90);
-        }
-
-        self::cleanZoneFiles($dataDir);
-        self::writeZoneFiles($allocations, $dataDir);
-
-        if ($progressCallback !== null) {
-            $progressCallback(100);
-        }
-
-        Util::sysLogMsg(__CLASS__, 'DB-IP data processed, ' . count($allocations) . ' countries');
+        return $tmpGz;
     }
 
     /**

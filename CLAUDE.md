@@ -34,11 +34,28 @@ composer install
 # Исходник: public/assets/js/src/module-geoip-index.js
 # Результат: public/assets/js/module-geoip-index.js
 
+# Обновление офлайн-базы DB-IP Lite перед коммитом/релизом
+./scripts/update-offline-db.sh
+
 # Проверка PHP-синтаксиса
 php -l <file.php>
 ```
 
 Формальные тесты (phpunit) в MikoPBX модулях не используются — валидация происходит на уровне системы PBX.
+
+## Offline GeoIP Database
+
+`db/dbip-country-lite.csv.gz` — зашитая в репозиторий копия DB-IP Lite (CC BY 4.0). Клиенты часто работают в ограниченных сетях и не могут стабильно скачать базу с `download.db-ip.com`, поэтому `DBIPDataProvider` сначала пробует офлайн-файл и только при его отсутствии идёт онлайн.
+
+- Источник: `https://download.db-ip.com/free/dbip-country-lite-YYYY-MM.csv.gz` (~4 МБ, обновляется первого числа каждого месяца)
+- Обновление **только вручную** перед релизом:
+  ```bash
+  ./scripts/update-offline-db.sh                # текущий месяц с fallback на предыдущий
+  ./scripts/update-offline-db.sh 2026-04        # конкретный месяц
+  git status db/                                # убедиться что есть diff
+  git add db/dbip-country-lite.csv.gz && git commit -m "chore: refresh offline DB-IP Lite"
+  ```
+- При зашитой базе старше 90 дней `DBIPDataProvider` пишет предупреждение в syslog (`STALE_WARN_DAYS`), но продолжает работу — это сигнал релиз-менеджеру обновить пакет
 
 ## Key Dependencies
 
