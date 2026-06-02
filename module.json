@@ -3,7 +3,7 @@
   "moduleUniqueID": "ModuleGeoIP",
   "support_email": "help@miko.ru",
   "version": "%ModuleVersion%",
-  "min_pbx_version": "2024.1.114",
+  "min_pbx_version": "2026.1.223",
   "release_settings": {
     "publish_release": true,
     "changelog_enabled": true,
